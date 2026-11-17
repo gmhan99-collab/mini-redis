@@ -14,6 +14,7 @@
 #define ACCEPT_BUDGET 16
 #define IO_BUDGET (64u * 1024u)
 #define INPUT_CAPACITY (64u * 1024u)
+#define TCP_CLOSE_TIMEOUT_MS 1000u
 #ifndef TCP_RECEIVE_TIMEOUT_MS
 #define TCP_RECEIVE_TIMEOUT_MS 10000u
 #endif
@@ -36,6 +37,8 @@ typedef struct {
     uint64_t idle_started;
     int receiving;
     int eof;
+    int closing;
+    uint64_t close_started;
 } client_connection;
 
 static volatile LONG stop_requested;
@@ -88,6 +91,20 @@ static client_connection *create_client(SOCKET socket, uint64_t now)
 static int receive_client(client_connection *client, uint64_t now)
 {
     size_t remaining = IO_BUDGET;
+    if (client->closing) {
+        char discard[4096];
+        while (!client->eof && remaining) {
+            int count = recv(client->socket, discard, sizeof(discard), 0);
+            if (count == 0) {
+                return 0;
+            }
+            if (count < 0) {
+                return WSAGetLastError() == WSAEWOULDBLOCK;
+            }
+            remaining -= (size_t)count;
+        }
+        return 1;
+    }
     while (!client->eof && remaining && client->input_length < INPUT_CAPACITY) {
         size_t available = INPUT_CAPACITY - client->input_length;
         int received;
@@ -113,10 +130,14 @@ static int receive_client(client_connection *client, uint64_t now)
 }
 
 /* Called once per loop: a completed response always blocks further execution. */
-static int execute_request(client_connection *client, store_t *store, uint64_t now)
+static int execute_request(client_connection *client, const tcp_application *application, uint64_t now)
 {
     size_t consumed = 0;
+    uint64_t feed_started;
     int result;
+    if (client->closing) {
+        return !client->eof;
+    }
     if (client->output.data != NULL) {
         return 1;
     }
@@ -127,8 +148,10 @@ static int execute_request(client_connection *client, store_t *store, uint64_t n
         client->receiving = 1;
         client->receive_started = now;
     }
+    feed_started = GetTickCount64();
     result = http_connection_feed(client->http, client->input, client->input_length,
-                                  &consumed, store, now, &client->output);
+                                  &consumed, application ? application->handler : NULL,
+                                  application ? application->context : NULL, now, &client->output);
     /* An incomplete feed must consume input, otherwise internal work spins. */
     if (consumed > client->input_length || result < 0 ||
         (result == 0 && consumed == 0)) {
@@ -142,7 +165,9 @@ static int execute_request(client_connection *client, store_t *store, uint64_t n
         }
         client->receiving = 0;
         client->sent = 0;
-        client->send_started = now;
+        /* SQL can block this thread for longer than a network deadline. The send
+         * deadline starts when a response exists, excluding handler execution. */
+        client->send_started = now + (GetTickCount64() - feed_started);
         return 1;
     }
     /* EOF with an incomplete message cannot become complete later. */
@@ -175,7 +200,16 @@ static int send_response(client_connection *client, uint64_t now)
             client->sent = 0;
             http_connection_reset(client->http);
             client->idle_started = now;
-            return !close_after && !(client->eof && client->input_length == 0);
+            if (close_after) {
+                /* A close with unread peer bytes can discard an error response on Windows.
+                 * Half-close after sending, then drain with an absolute bounded deadline. */
+                shutdown(client->socket, SD_SEND);
+                client->closing = 1;
+                client->close_started = now;
+                client->input_length = 0;
+                return !client->eof;
+            }
+            return !(client->eof && client->input_length == 0);
         }
     }
     return 1;
@@ -189,6 +223,9 @@ static uint64_t time_remaining(uint64_t now, uint64_t started, uint64_t limit)
 
 static uint64_t client_wait(client_connection *client, uint64_t now)
 {
+    if (client->closing) {
+        return time_remaining(now, client->close_started, TCP_CLOSE_TIMEOUT_MS);
+    }
     if (client->output.data != NULL) {
         return time_remaining(now, client->send_started, TCP_SEND_TIMEOUT_MS);
     }
@@ -200,6 +237,10 @@ static uint64_t client_wait(client_connection *client, uint64_t now)
 
 static int watch_client(client_connection *client, fd_set *reads, fd_set *writes)
 {
+    if (client->closing) {
+        FD_SET(client->socket, reads);
+        return 0;
+    }
     if (!client->eof && client->input_length < INPUT_CAPACITY) {
         FD_SET(client->socket, reads);
     }
@@ -229,7 +270,7 @@ static void accept_clients(SOCKET listener, client_connection **clients, uint64_
     }
 }
 
-static int run_loop(SOCKET listener, store_t *store, client_connection **clients)
+static int run_loop(SOCKET listener, const tcp_application *application, client_connection **clients)
 {
     while (!InterlockedCompareExchange(&stop_requested, 0, 0)) {
         fd_set reads;
@@ -289,10 +330,10 @@ static int run_loop(SOCKET listener, store_t *store, client_connection **clients
                 alive = receive_client(client, now);
             }
             if (alive) {
-                alive = execute_request(client, store, now);
+                alive = execute_request(client, application, now);
             }
             if (alive && client->output.data != NULL && FD_ISSET(client->socket, &writes)) {
-                alive = send_response(client, now);
+                alive = send_response(client, GetTickCount64());
             }
             if (!alive) {
                 destroy_client(client);
@@ -303,13 +344,12 @@ static int run_loop(SOCKET listener, store_t *store, client_connection **clients
     return 0;
 }
 
-int tcp_server_run(uint16_t port)
+int tcp_server_run_application(uint16_t port, const tcp_application *application)
 {
     WSADATA winsock;
     SOCKET listener = INVALID_SOCKET;
     struct sockaddr_in address;
     client_connection *clients[MAX_CONNECTIONS] = {0};
-    store_t *store = NULL;
     int result = 1;
     int handler_registered = 0;
     const BOOL exclusive_address = TRUE;
@@ -320,7 +360,7 @@ int tcp_server_run(uint16_t port)
     }
     InterlockedExchange(&stop_requested, 0);
     handler_registered = SetConsoleCtrlHandler(request_shutdown, TRUE);
-    if (!handler_registered || store_create(1024, &store) != STORE_OK) {
+    if (!handler_registered || !application || !application->handler) {
         fprintf(stderr, "Server initialization failed\n");
         goto cleanup;
     }
@@ -341,9 +381,9 @@ int tcp_server_run(uint16_t port)
         listen(listener, SOMAXCONN) == SOCKET_ERROR) {
         goto socket_error;
     }
-    printf("Mini Redis listening on http://127.0.0.1:%u\n", (unsigned int)port);
+    printf("%s listening on http://127.0.0.1:%u\n", application->name, (unsigned int)port);
     fflush(stdout);
-    result = run_loop(listener, store, clients);
+    result = run_loop(listener, application, clients);
     goto cleanup;
 
 socket_error:
@@ -355,7 +395,6 @@ cleanup:
     for (i = 0; i < MAX_CONNECTIONS; i++) {
         destroy_client(clients[i]);
     }
-    store_destroy(store);
     if (handler_registered) {
         SetConsoleCtrlHandler(request_shutdown, FALSE);
     }

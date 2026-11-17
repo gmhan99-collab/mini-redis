@@ -8,7 +8,8 @@
 #define HASH_TABLE_SEED_SIZE 16
 
 /*
- * 버킷 배열 + 단일 연결 리스트 체이닝 해시 테이블.
+ * 버킷 배열 + 생성 시 선택하는 연결 리스트 또는 레드블랙 트리(RBTree) 해시 테이블.
+ * 기존 생성 API의 기본 구조는 연결 리스트이다.
  * 키 해시는 테이블마다 고유한 128비트 시드를 쓰는 SipHash-2-4(64비트 출력)이다.
  * 키와 값은 길이가 지정된 임의의 바이트열이며, 저장 시 복사되어 테이블이 소유한다.
  * 신규 키 삽입으로 개수가 버킷 수를 넘게 되면(size + 1 > bucket_count) 삽입 전에 버킷 수를
@@ -17,6 +18,20 @@
  * 스레드 안전하지 않다. 동시 접근은 호출자가 직렬화해야 한다.
  */
 typedef struct hash_table hash_table_t;
+typedef enum { HASH_TABLE_LIST = 0, HASH_TABLE_RBTREE = 1 } hash_table_bucket_structure;
+typedef struct {
+    size_t bucket_count;
+    hash_table_bucket_structure bucket_structure;
+    const uint8_t *seed; /* NULL selects OS randomness; otherwise 16 bytes. */
+} hash_table_config;
+typedef struct {
+    size_t size, bucket_count, nonempty_buckets, max_bucket_size;
+    size_t max_chain_length, max_tree_height; /* Tree height counts nodes: empty=0, root=1. */
+    uint64_t rehash_count;
+    double rehash_ms, load_factor;
+} hash_table_stats;
+
+
 
 typedef enum {
     HASH_TABLE_OK = 0,
@@ -26,6 +41,14 @@ typedef enum {
     HASH_TABLE_ERR_RANDOM_SOURCE,
     HASH_TABLE_ERR_OVERFLOW
 } hash_table_status;
+
+hash_table_status hash_table_create_config(const hash_table_config *config, hash_table_t **out_table);
+/* O(bucket_count + size), no allocations. histogram index is bucket size; optional. */
+int hash_table_snapshot(const hash_table_t *table, hash_table_stats *out, size_t *histogram, size_t histogram_len);
+int hash_table_validate(const hash_table_t *table);
+const char *hash_table_structure_name(hash_table_bucket_structure structure);
+/* JSON includes config and actual snapshot; caller owns returned malloc buffer. */
+char *hash_table_describe(const hash_table_t *table);
 
 typedef enum {
     HASH_TABLE_SET_INSERTED,

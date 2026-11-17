@@ -9,7 +9,13 @@
 
 #include <stdint.h>
 
-/* Owns Winsock, the store, and all connections until shutdown. 0 on clean exit. */
-int tcp_server_run(uint16_t port);
+#include "server/http_api.h"
+typedef struct {
+    const http_handler *handler;
+    void *context;
+    const char *name;
+} tcp_application;
+/* Owns Winsock and connections; application resources belong to caller. */
+int tcp_server_run_application(uint16_t port, const tcp_application *application);
 
 #endif

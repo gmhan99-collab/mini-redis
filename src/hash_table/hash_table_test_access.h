@@ -17,6 +17,8 @@ typedef struct {
     const void *next;
     const void *key;
     size_t key_len;
+    const void *left, *right, *parent;
+    int red;
 } hash_table_test_link;
 
 /* 신규 키 하나를 넣을 때 필요한 버킷 수 계산을 그대로 노출한다. 실패 시 *out_bucket_count는 바뀌지 않는다. */
@@ -24,5 +26,7 @@ hash_table_status hash_table_test_plan_bucket_count(size_t size, size_t bucket_c
 
 /* 최대 capacity개의 엔트리 위치를 out에 기록하고, 전체 엔트리 수를 돌려준다. */
 size_t hash_table_test_collect_links(const hash_table_t *table, hash_table_test_link *out, size_t capacity);
+
+int hash_table_test_force_collisions(hash_table_t *table);
 
 #endif

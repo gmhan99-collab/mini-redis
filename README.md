@@ -127,3 +127,7 @@ int main(void)
 ## 보류 항목(이번 범위 밖)
 
 점진적 리해시, 자동 축소, ListPack, 주기적 TTL 정리, RESP, 영속성, 성능 튜닝, 대규모 퍼징/부하 테스트. TTL 저장소와 HTTP/TCP는 이미 별도 계층으로 구현되어 있다. 계획은 [구현 설계.md](구현%20설계.md)의 향후 계획 참고.
+
+## 2026-11-17 버킷 구조 선택
+
+기존 생성 API와 리스트 기본값을 유지하면서 RBTree를 선택하는 `hash_table_create_config()`·`store_create_config()`를 추가했습니다. 서버 시작 옵션, 실제 상태 통계, 별도 C 삽입·조회 비교 도구와 실패 계약은 [BUCKET_STRUCTURES.md](BUCKET_STRUCTURES.md)를 참고하십시오. 기존 3-system 네이티브 벤치마크는 유지합니다.

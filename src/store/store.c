@@ -52,7 +52,7 @@ static int is_valid_bytes(const void *bytes, size_t len)
     return bytes != NULL || len == 0;
 }
 
-store_status store_create(size_t bucket_count, store_t **out_store)
+store_status store_create_config(const hash_table_config *config, store_t **out_store)
 {
     if (out_store == NULL) {
         return STORE_INVALID_ARGUMENT;
@@ -63,13 +63,24 @@ store_status store_create(size_t bucket_count, store_t **out_store)
     if (store == NULL) {
         return STORE_NO_MEMORY;
     }
-    const hash_table_status status = hash_table_create(bucket_count, &store->table);
+    const hash_table_status status = hash_table_create_config(config, &store->table);
     if (status != HASH_TABLE_OK) {
         STORE_FREE(store);
         return from_hash_table_status(status);
     }
     *out_store = store;
     return STORE_OK;
+}
+
+store_status store_create(size_t bucket_count, store_t **out_store)
+{
+    const hash_table_config config = {bucket_count, HASH_TABLE_LIST, NULL};
+    return store_create_config(&config, out_store);
+}
+
+char *store_describe(const store_t *store)
+{
+    return store ? hash_table_describe(store->table) : NULL;
 }
 
 void store_destroy(store_t *store)

@@ -2,12 +2,15 @@
 #define MINI_REDIS_STORE_H
 #include <stddef.h>
 #include <stdint.h>
+#include "hash_table.h"
 typedef struct store store_t;
 typedef enum {
     STORE_OK = 0, STORE_NOT_FOUND, STORE_EXPIRED, STORE_INVALID_ARGUMENT,
     STORE_NO_MEMORY, STORE_OVERFLOW, STORE_RANDOM_SOURCE
 } store_status;
 store_status store_create(size_t bucket_count, store_t **out_store);
+store_status store_create_config(const hash_table_config *config, store_t **out_store);
+char *store_describe(const store_t *store);
 void store_destroy(store_t *store);
 /* ttl_ms=0 means no expiry. now_ms is a monotonic timestamp supplied by caller.
  * A key expires when now_ms >= put_now_ms + ttl_ms. Expired keys are removed only on access
