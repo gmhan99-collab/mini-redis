@@ -7,7 +7,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
-parser.add_argument('--build-dir', default='build/bucket-compare/hardening-mutants')
+parser.add_argument('--build-dir', default='build/hardening-mutants')
 parser.add_argument('--mutant', choices=['root_black', 'black_height', 'rehash_count', 'rehash_duration'])
 args = parser.parse_args()
 directory = (ROOT / args.build_dir).resolve()

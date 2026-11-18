@@ -39,7 +39,7 @@ mingw32-make check         # 저장소·HTTP·TCP 및 실제 기능·시간 제�
 |---|---|---|
 | 기본 빌드 | `make` 또는 `make all` | 서버, 해시 테이블 정적 라이브러리, 예제, 해시 테이블 단위 테스트 실행 파일을 빌드합니다. |
 | 정리 | `make clean` | `build/` 디렉터리 전체를 삭제합니다. |
-| 서버 | `make server` | `build/mini-redis.exe`를 빌드합니다. |
+| 서버 | `make server` | Windows에서는 `build/mini-redis.exe`, POSIX에서는 `build/mini-redis`를 빌드합니다. |
 | 서버 | `make run-server` | 서버를 빌드하고 실행합니다. |
 | 라이브러리 | `make lib` | `build/libhash_table.a`를 빌드합니다. |
 | 예제 | `make example` | `build/basic_usage.exe`를 빌드합니다. |
@@ -48,12 +48,12 @@ mingw32-make check         # 저장소·HTTP·TCP 및 실제 기능·시간 제�
 | 테스트 | `make store-test` | 키·값 저장소 단위 테스트를 실행합니다. |
 | 테스트 | `make http-test` | HTTP API 테스트를 실행합니다. |
 | 테스트 | `make tcp-test` | TCP 연결과 송수신 처리 테스트를 실행합니다. |
-| 테스트 | `make server-unit-test` | `store-test`, `http-test`, `tcp-test`를 함께 실행합니다. |
+| 테스트 | `make server-unit-test` | `store-test`와 `http-test`를 실행합니다. Windows에서는 `tcp-test`도 실행합니다. |
 | 테스트 | `make functional-test` | 실제 서버를 띄워 HTTP 요청으로 기능을 검증합니다. |
 | 테스트 | `make timeout-test` | 제한 시간을 짧게 설정한 테스트용 서버로 TCP 타임아웃 동작을 검증합니다. |
 | 테스트 | `make bucket-test` | 버킷 동작과 `bucket-hardening-test`를 함께 검증합니다. |
 | 테스트 | `make bucket-hardening-test` | 버킷 트리의 불변식과 실패 처리 등을 집중 검증합니다. |
-| 테스트 | `make check` | `unit-test`, `server-unit-test`, `functional-test`, `timeout-test`, `bucket-test`, `bucket-native-test`를 실행합니다. |
+| 테스트 | `make check` | `unit-test`, `server-unit-test`, `functional-test`, `timeout-test`, `persistence-test`, `bucket-test`, `bucket-native-test`를 실행합니다. |
 | 벤치마크 | `make benchmark` | 네이티브 성능 측정 실행 파일을 빌드합니다. |
 | 벤치마크 | `make native-test` | 네이티브 벤치마크의 동작과 출력을 검증합니다. 별도로 실행합니다. |
 | 벤치마크 | `make bucket-benchmark` | 버킷 구현을 비교하는 벤치마크 실행 파일을 빌드합니다. |
@@ -99,11 +99,12 @@ int main(void)
 }
 ```
 
-교체(`INSERTED`/`REPLACED` 구분)와 조회 실패(`NOT_FOUND`) 처리를 포함한 예제는 `examples/basic_usage.c`(`mingw32-make run-example`)에 있다.
+교체(`INSERTED`/`REPLACED` 구분)와 조회 실패(`NOT_FOUND`) 처리를 포함한 예제는 `examples/basic_usage.c`(`mingw32-make run-example`)에 있습니다..
 
 빌드: `gcc -std=c11 -Iinclude app.c build/libhash_table.a -lbcrypt` (Linux에서는 `-lbcrypt` 제외).
 
 ## 자료구조 옵션
+
 서버를 시작할 때 `--bucket-structure` 옵션으로 버킷의 요소를 관리할 방법을 선택할 수 있습니다.
 
 `--bucket-structure list` 연결 리스트 (기본값)
@@ -176,8 +177,30 @@ make server
 
 ## 보류 항목(이번 범위 밖)
 
-점진적 리해시, 자동 축소, ListPack, 주기적 TTL 정리, RESP, 영속성, 성능 튜닝, 대규모 퍼징/부하 테스트. TTL 저장소와 HTTP/TCP는 이미 별도 계층으로 구현되어 있다. 계획은 [구현 설계.md](구현%20설계.md)의 향후 계획 참고.
+점진적 리해시, 자동 축소, ListPack, 주기적 TTL 정리, RESP, 성능 튜닝, 대규모 퍼징/부하 테스트. 계획은 [구현 설계.md](구현%20설계.md)의 향후 계획을 참고하세요.
 
 ## 2026-11-17 버킷 구조 선택
 
 기존 생성 API와 리스트 기본값을 유지하면서 RBTree를 선택하는 `hash_table_create_config()`·`store_create_config()`를 추가했습니다. 서버 시작 옵션, 실제 상태 통계, 별도 C 삽입·조회 비교 도구와 실패 계약은 [BUCKET_STRUCTURES.md](BUCKET_STRUCTURES.md)를 참고하십시오. 기존 3-system 네이티브 벤치마크는 유지합니다.
+
+## RDB·AOF 영속성
+
+기본 모드는 메모리 전용 `none`입니다. `rdb`는 수동 저장 때의 스냅샷을 복원합니다. `aof`는 성공한 PUT·DELETE를 로그에 기록하고 매 변경마다 디스크와 동기화합니다. 리스트와 RBTree 모두 같은 파일 형식을 사용합니다.
+
+Windows에서는 `mingw32-make server`, POSIX에서는 `make server`로 빌드합니다. 아래 경로의 부모 디렉터리가 존재해야 합니다.
+
+```powershell
+.\build\mini-redis.exe 8080 --persistence rdb --data-dir .\build\redis-rdb-demo --data-action create
+# 별도 터미널
+curl.exe http://127.0.0.1:8080/persistence
+curl.exe -X PUT --data-binary "value" http://127.0.0.1:8080/keys/demo
+curl.exe -X POST http://127.0.0.1:8080/persistence/save
+curl.exe -X POST http://127.0.0.1:8080/persistence/shutdown
+# 첫 프로세스가 종료 코드 0으로 끝난 후
+.\build\mini-redis.exe 8080 --persistence rdb --data-dir .\build\redis-rdb-demo --data-action open
+curl.exe http://127.0.0.1:8080/keys/demo
+```
+
+`create`는 새 디렉터리만 만들고 `open`은 같은 모드의 기존 저장소를 검증한 뒤 엽니다. AOF에서는 수동 저장 호출을 생략합니다. 정상 종료한 저장소만 재개할 수 있습니다. TTL은 서버 가동 시간만 누적하므로 정지와 복원 시간 동안 만료 시계가 멈춥니다. 실제 Redis의 절대 시각 기반 만료 및 디스크 형식과 다릅니다. AOF는 로그를 계속 추가하므로 파일 크기와 복원 시간이 증가합니다.
+
+형식, 실패 처리, 성능 측정 범위는 [구현 설계.md](구현%20설계.md#영속성-설계)를 참고하세요. 격리 회귀는 `make persistence-test BUILD_DIR=build/persistence-test`로 실행합니다. Windows의 명령은 `mingw32-make`입니다.

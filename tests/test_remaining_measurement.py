@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-RDBMS = ROOT.parent / 'hjm-mini-rdbms'
+RDBMS = ROOT.parent / 'mini-rdbms'
 sys.path.insert(0, str(ROOT / 'tests/server'))
 sys.path.insert(0, str(RDBMS / 'tests'))
 from test_functional import Server
@@ -65,8 +65,8 @@ def health(executable):
 class RemainingMeasurement(unittest.TestCase):
     def test_actual_matched_layers_have_same_independent_checksum(self):
         for hit, seed in [(0, 0), (41, 42), (100, 4294967295)]:
-            values = [native(ROOT / 'build/todo-remaining/mini-redis-benchmark.exe', hit=hit, seed=seed),
-                      native(RDBMS / 'build/todo-remaining/mini-rdbms-benchmark.exe', hit=hit, seed=seed)]
+            values = [native(ROOT / 'build/mini-redis-benchmark.exe', hit=hit, seed=seed),
+                      native(RDBMS / 'build/mini-rdbms-benchmark.exe', hit=hit, seed=seed)]
             expected = checksum_oracle(19, query_oracle(19, 53, seed, hit), matched=True)
             for value in values:
                 self.assertIs(value['metadata']['equivalent_structure_comparison'], False)
@@ -114,7 +114,7 @@ class RemainingMeasurement(unittest.TestCase):
             (RDBMS, 'mini-rdbms-server.exe', 'mini-rdbms-benchmark.exe',
              '-std=c11 -Wall -Wextra -Wpedantic -D_FILE_OFFSET_BITS=64 -Iinclude'),
         ]:
-            relative = 'build/todo-remaining/metadata-regression'
+            relative = 'build/metadata-regression'
             build = project / relative
             build.mkdir(parents=True, exist_ok=True)
             previous = None

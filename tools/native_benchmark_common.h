@@ -15,6 +15,12 @@
 #ifndef BENCH_BUILD_FLAGS
 #define BENCH_BUILD_FLAGS "not supplied"
 #endif
+/* Tool input caps, not engine limits. Count was measured up to 1,000,000 for both
+ * backends; IDs stay below 2 * count + 1 so the uint32 query/miss IDs, the 16-byte
+ * decimal key and the SQL/value buffers cannot overflow at this cap. */
+#define BENCH_COUNT_MAX 1000000U
+#define BENCH_QUERIES_MAX 1000000U
+#define BENCH_ROUNDS_MAX 20U
 
 typedef struct {
     uint32_t count, queries, rounds, seed, hit_percent;
@@ -69,7 +75,7 @@ static int bench_options(int argc, char **argv, int rdbms, bench_config *config)
         uint32_t *const numbers[] = {
             &config->count, &config->queries, &config->rounds, &config->seed, &config->hit_percent
         };
-        const uint32_t maxima[] = {10000, 1000000, 20, UINT32_MAX, 100};
+        const uint32_t maxima[] = {BENCH_COUNT_MAX, BENCH_QUERIES_MAX, BENCH_ROUNDS_MAX, UINT32_MAX, 100};
         for (int j = 0; j < (rdbms ? 8 : 5); j++) {
             if (!strcmp(argv[i], names[j])) {
                 option = j;

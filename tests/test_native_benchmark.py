@@ -54,17 +54,17 @@ class NativeBenchmark(unittest.TestCase):
                                encoding='utf-8')
         self.counter = 0
 
-    def invoke(self, *args, mode='bptree', data=None):
+    def invoke(self, *args, mode='bptree', data=None, timeout=30):
         self.counter += 1
         command = [str(EXE)]
         if SYSTEM == 'rdbms':
             command += ['--schema', str(self.schema), '--mode', mode, '--data-dir',
                         str(data or self.root / f'data-{self.counter}')]
-        return subprocess.run(command + list(args), capture_output=True, text=True, timeout=30)
+        return subprocess.run(command + list(args), capture_output=True, text=True, timeout=timeout)
 
-    def valid_run(self, count=9, queries=17, rounds=3, seed=0, hit=35, mode='bptree'):
+    def valid_run(self, count=9, queries=17, rounds=3, seed=0, hit=35, mode='bptree', timeout=30):
         process = self.invoke('--count', str(count), '--queries', str(queries), '--rounds', str(rounds),
-                              '--seed', str(seed), '--hit-percent', str(hit), mode=mode)
+                              '--seed', str(seed), '--hit-percent', str(hit), mode=mode, timeout=timeout)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(process.stderr, '')
         value = json.loads(process.stdout)
@@ -134,11 +134,15 @@ class NativeBenchmark(unittest.TestCase):
             for layer in ['full_lookup', 'pure_lookup', 'matched_lookup']:
                 self.assertEqual(a[layer]['checksum'], b[layer]['checksum'])
 
+    def test_count_above_previous_cap(self):
+        self.valid_run(count=10001, queries=7, rounds=1, hit=50)
+
     def test_count_upper_bound(self):
-        self.valid_run(count=10000, queries=7, rounds=1, hit=50)
+        # 1,000,000 is the measured tool cap; preparation dominates, so allow a longer process timeout.
+        self.valid_run(count=1000000, queries=7, rounds=1, hit=50, timeout=180)
 
     def test_invalid_options_never_emit_success(self):
-        cases = [('--count', '0'), ('--count', '10001'), ('--queries', '0'),
+        cases = [('--count', '0'), ('--count', '1000001'), ('--count', '4294967296'), ('--queries', '0'),
                  ('--queries', '1000001'), ('--rounds', '0'), ('--rounds', '21'),
                  ('--seed', '4294967296'), ('--hit-percent', '101'),
                  ('--unknown', '1'), ('--count', '1', '--count', '2'), ('--count',)]
@@ -150,6 +154,7 @@ class NativeBenchmark(unittest.TestCase):
                 self.assertNotEqual(process.returncode, 0)
                 self.assertEqual(process.stdout, '')
                 self.assertTrue(process.stderr)
+                self.assertIn('--count 1..1000000 --queries 1..1000000 --rounds 1..20', process.stderr)
 
     def test_scan(self):
         if SYSTEM != 'rdbms':

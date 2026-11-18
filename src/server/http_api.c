@@ -84,6 +84,8 @@ static const char *reason_phrase(int status)
         return "Not Found";
     case 405:
         return "Method Not Allowed";
+    case 409:
+        return "Conflict";
     case 413:
         return "Content Too Large";
     case 415:

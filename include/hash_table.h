@@ -49,6 +49,9 @@ int hash_table_validate(const hash_table_t *table);
 const char *hash_table_structure_name(hash_table_bucket_structure structure);
 /* JSON includes config and actual snapshot; caller owns returned malloc buffer. */
 char *hash_table_describe(const hash_table_t *table);
+/* Visits each entry until the callback returns zero. The callback cannot mutate the table. */
+typedef int (*hash_table_visitor)(const void *, size_t, const void *, size_t, void *);
+int hash_table_visit(const hash_table_t *table, hash_table_visitor visit, void *context);
 
 typedef enum {
     HASH_TABLE_SET_INSERTED,
