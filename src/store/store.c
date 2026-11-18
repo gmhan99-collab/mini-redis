@@ -193,6 +193,29 @@ store_status store_delete(store_t *store, const void *key, size_t key_len, uint6
     return from_hash_table_status(hash_table_delete(store->table, key, key_len));
 }
 
+typedef struct {
+    uint64_t now_ms;
+    store_visitor visit;
+    void *context;
+} live_visitor;
+
+static int visit_live_record(const void *key, size_t key_len, const void *record,
+                             size_t record_len, void *context)
+{
+    const live_visitor *visitor = context;
+    uint64_t expiry;
+    memcpy(&expiry, record, EXPIRY_HEADER_SIZE);
+    return is_expired(expiry, visitor->now_ms) ||
+           visitor->visit(key, key_len, (const unsigned char *)record + EXPIRY_HEADER_SIZE,
+                          record_len - EXPIRY_HEADER_SIZE, expiry, visitor->context);
+}
+
+int store_visit_live(const store_t *store, uint64_t now_ms, store_visitor visit, void *context)
+{
+    live_visitor visitor = {now_ms, visit, context};
+    return store && visit && hash_table_visit(store->table, visit_live_record, &visitor);
+}
+
 const char *store_status_message(store_status status)
 {
     switch (status) {
@@ -210,6 +233,8 @@ const char *store_status_message(store_status status)
         return "overflow";
     case STORE_RANDOM_SOURCE:
         return "random_source";
+    case STORE_PERSISTENCE_ERROR:
+        return "persistence_error";
     }
     return "unknown";
 }

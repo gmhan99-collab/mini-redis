@@ -10,6 +10,7 @@ typedef struct {
     unsigned char *data;
     size_t length;
     int close_after;
+    int stop_after;
 } http_response;
 typedef struct {
     int status;

@@ -1,10 +1,29 @@
-#ifndef _WIN32_WINNT
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#if defined(_WIN32) && !defined(_WIN32_WINNT)
 #define _WIN32_WINNT 0x0600
 #endif
 #include "server/tcp_server.h"
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR (-1)
+#define SD_SEND SHUT_WR
+#define closesocket close
+#endif
 #include "server/http_api.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,8 +60,8 @@ typedef struct {
     uint64_t close_started;
 } client_connection;
 
+#ifdef _WIN32
 static volatile LONG stop_requested;
-
 static BOOL WINAPI request_shutdown(DWORD event)
 {
     if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT ||
@@ -53,11 +72,58 @@ static BOOL WINAPI request_shutdown(DWORD event)
     return FALSE;
 }
 
+static int stopping(void)
+{
+    return InterlockedCompareExchange(&stop_requested, 0, 0) != 0;
+}
+
+uint64_t tcp_server_now_ms(void)
+{
+    return GetTickCount64();
+}
+
+static int would_block(void)
+{
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+}
+
 static int set_nonblocking(SOCKET socket)
 {
     u_long enabled = 1;
     return ioctlsocket(socket, FIONBIO, &enabled) == 0;
 }
+#else
+static volatile sig_atomic_t stop_requested;
+
+static void request_shutdown(int signal_number)
+{
+    (void)signal_number;
+    stop_requested = 1;
+}
+
+static int stopping(void)
+{
+    return stop_requested;
+}
+
+uint64_t tcp_server_now_ms(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+static int would_block(void)
+{
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+}
+
+static int set_nonblocking(SOCKET socket)
+{
+    int flags = fcntl(socket, F_GETFL);
+    return flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+#endif
 
 static void destroy_client(client_connection *client)
 {
@@ -99,7 +165,7 @@ static int receive_client(client_connection *client, uint64_t now)
                 return 0;
             }
             if (count < 0) {
-                return WSAGetLastError() == WSAEWOULDBLOCK;
+                return would_block();
             }
             remaining -= (size_t)count;
         }
@@ -123,7 +189,7 @@ static int receive_client(client_connection *client, uint64_t now)
         } else if (received == 0) {
             client->eof = 1;
         } else {
-            return WSAGetLastError() == WSAEWOULDBLOCK;
+            return would_block();
         }
     }
     return 1;
@@ -148,7 +214,7 @@ static int execute_request(client_connection *client, const tcp_application *app
         client->receiving = 1;
         client->receive_started = now;
     }
-    feed_started = GetTickCount64();
+    feed_started = tcp_server_now_ms();
     result = http_connection_feed(client->http, client->input, client->input_length,
                                   &consumed, application ? application->handler : NULL,
                                   application ? application->context : NULL, now, &client->output);
@@ -167,7 +233,7 @@ static int execute_request(client_connection *client, const tcp_application *app
         client->sent = 0;
         /* SQL can block this thread for longer than a network deadline. The send
          * deadline starts when a response exists, excluding handler execution. */
-        client->send_started = now + (GetTickCount64() - feed_started);
+        client->send_started = now + (tcp_server_now_ms() - feed_started);
         return 1;
     }
     /* EOF with an incomplete message cannot become complete later. */
@@ -186,7 +252,7 @@ static int send_response(client_connection *client, uint64_t now)
         sent = send(client->socket, (const char *)client->output.data + client->sent,
                     (int)count, 0);
         if (sent == SOCKET_ERROR) {
-            return WSAGetLastError() == WSAEWOULDBLOCK;
+            return would_block();
         }
         if (sent == 0) {
             return 0;
@@ -260,6 +326,12 @@ static void accept_clients(SOCKET listener, client_connection **clients, uint64_
         if (socket == INVALID_SOCKET) {
             return;
         }
+#ifndef _WIN32
+        if (socket >= FD_SETSIZE) {
+            closesocket(socket);
+            continue;
+        }
+#endif
         for (slot = 0; slot < MAX_CONNECTIONS && clients[slot] != NULL; slot++) {
         }
         if (slot == MAX_CONNECTIONS) {
@@ -270,13 +342,44 @@ static void accept_clients(SOCKET listener, client_connection **clients, uint64_
     }
 }
 
+static int select_clients(SOCKET highest, fd_set *reads, fd_set *writes, struct timeval *timeout)
+{
+#ifdef _WIN32
+    (void)highest;
+    return select(0, reads, writes, NULL, timeout);
+#else
+    return select(highest + 1, reads, writes, NULL, timeout);
+#endif
+}
+
+/* Once a handler requests shutdown, only its socket can progress. */
+static void drain_shutdown_response(client_connection *client)
+{
+    while (client->output.data || client->closing) {
+        fd_set sockets;
+        uint64_t left = client_wait(client, tcp_server_now_ms());
+        struct timeval timeout = {(long)(left / 1000), (long)(left % 1000 * 1000)};
+        FD_ZERO(&sockets);
+        FD_SET(client->socket, &sockets);
+        if (!left || select_clients(client->socket, client->closing ? &sockets : NULL,
+                                    client->closing ? NULL : &sockets, &timeout) <= 0) {
+            break;
+        }
+        uint64_t now = tcp_server_now_ms();
+        if (!(client->closing ? receive_client(client, now) : send_response(client, now))) {
+            break;
+        }
+    }
+}
+
 static int run_loop(SOCKET listener, const tcp_application *application, client_connection **clients)
 {
-    while (!InterlockedCompareExchange(&stop_requested, 0, 0)) {
+    while (!stopping()) {
         fd_set reads;
         fd_set writes;
         struct timeval timeout;
-        uint64_t now = GetTickCount64();
+        SOCKET highest = listener;
+        uint64_t now = tcp_server_now_ms();
         uint64_t wait_ms = 100;
         size_t i;
         int ready;
@@ -301,16 +404,26 @@ static int run_loop(SOCKET listener, const tcp_application *application, client_
             if (watch_client(client, &reads, &writes)) {
                 wait_ms = 0;
             }
+            if (client->socket > highest) {
+                highest = client->socket;
+            }
         }
         timeout.tv_sec = 0;
         timeout.tv_usec = (long)(wait_ms * 1000);
-        ready = select(0, &reads, &writes, NULL, &timeout);
+        ready = select_clients(highest, &reads, &writes, &timeout);
         if (ready == SOCKET_ERROR) {
+#ifdef _WIN32
             fprintf(stderr, "select failed: %d\n", WSAGetLastError());
+#else
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("select");
+#endif
             return 1;
         }
-        now = GetTickCount64();
-        if (InterlockedCompareExchange(&stop_requested, 0, 0)) {
+        now = tcp_server_now_ms();
+        if (stopping()) {
             break;
         }
         if (FD_ISSET(listener, &reads)) {
@@ -322,7 +435,10 @@ static int run_loop(SOCKET listener, const tcp_application *application, client_
             if (client == NULL) {
                 continue;
             }
-            now = GetTickCount64();
+            if (stopping()) {
+                return 0;
+            }
+            now = tcp_server_now_ms();
             if (client_wait(client, now) == 0) {
                 alive = 0;
             }
@@ -331,9 +447,13 @@ static int run_loop(SOCKET listener, const tcp_application *application, client_
             }
             if (alive) {
                 alive = execute_request(client, application, now);
+                if (client->output.stop_after) {
+                    drain_shutdown_response(client);
+                    return 0;
+                }
             }
             if (alive && client->output.data != NULL && FD_ISSET(client->socket, &writes)) {
-                alive = send_response(client, GetTickCount64());
+                alive = send_response(client, tcp_server_now_ms());
             }
             if (!alive) {
                 destroy_client(client);
@@ -344,35 +464,64 @@ static int run_loop(SOCKET listener, const tcp_application *application, client_
     return 0;
 }
 
-int tcp_server_run_application(uint16_t port, const tcp_application *application)
+int tcp_server_run_managed(uint16_t port, const tcp_application *application, int (*ready)(void *))
 {
+#ifdef _WIN32
     WSADATA winsock;
+    int handler_registered = 0;
+    const BOOL exclusive_address = TRUE;
+#else
+    struct sigaction handler = {0}, ignore = {0}, old_int, old_term, old_pipe;
+    int int_installed = 0, term_installed = 0, pipe_installed = 0;
+#endif
     SOCKET listener = INVALID_SOCKET;
     struct sockaddr_in address;
     client_connection *clients[MAX_CONNECTIONS] = {0};
     int result = 1;
-    int handler_registered = 0;
-    const BOOL exclusive_address = TRUE;
     size_t i;
+#ifdef _WIN32
     if (port == 0 || WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
         fprintf(stderr, "Winsock initialization failed or invalid port\n");
         return 1;
     }
     InterlockedExchange(&stop_requested, 0);
     handler_registered = SetConsoleCtrlHandler(request_shutdown, TRUE);
-    if (!handler_registered || !application || !application->handler) {
-        fprintf(stderr, "Server initialization failed\n");
-        goto cleanup;
+    if (!handler_registered) {
+        goto initialization_error;
+    }
+#else
+    stop_requested = 0;
+    handler.sa_handler = request_shutdown;
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&handler.sa_mask);
+    sigemptyset(&ignore.sa_mask);
+    int_installed = sigaction(SIGINT, &handler, &old_int) == 0;
+    term_installed = sigaction(SIGTERM, &handler, &old_term) == 0;
+    pipe_installed = sigaction(SIGPIPE, &ignore, &old_pipe) == 0;
+    if (!int_installed || !term_installed || !pipe_installed) {
+        goto initialization_error;
+    }
+#endif
+    if (!port || !application || !application->handler) {
+        goto initialization_error;
     }
     listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listener == INVALID_SOCKET || !set_nonblocking(listener)) {
         goto socket_error;
     }
+#ifdef _WIN32
     /* Windows otherwise permits another socket to steal a live listening port. */
     if (setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
                    (const char *)&exclusive_address, sizeof(exclusive_address)) == SOCKET_ERROR) {
         goto socket_error;
     }
+#else
+    const int reuse = 1;
+    if (listener >= FD_SETSIZE ||
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == SOCKET_ERROR) {
+        goto socket_error;
+    }
+#endif
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -381,13 +530,23 @@ int tcp_server_run_application(uint16_t port, const tcp_application *application
         listen(listener, SOMAXCONN) == SOCKET_ERROR) {
         goto socket_error;
     }
+    if (ready && !ready(application->context)) {
+        goto initialization_error;
+    }
     printf("%s listening on http://127.0.0.1:%u\n", application->name, (unsigned int)port);
     fflush(stdout);
     result = run_loop(listener, application, clients);
     goto cleanup;
 
 socket_error:
+#ifdef _WIN32
     fprintf(stderr, "Socket initialization failed: %d\n", WSAGetLastError());
+#else
+    perror("Socket initialization");
+#endif
+    goto cleanup;
+initialization_error:
+    fprintf(stderr, "Server initialization failed\n");
 cleanup:
     if (listener != INVALID_SOCKET) {
         closesocket(listener);
@@ -395,9 +554,26 @@ cleanup:
     for (i = 0; i < MAX_CONNECTIONS; i++) {
         destroy_client(clients[i]);
     }
+#ifdef _WIN32
     if (handler_registered) {
         SetConsoleCtrlHandler(request_shutdown, FALSE);
     }
     WSACleanup();
+#else
+    if (int_installed) {
+        sigaction(SIGINT, &old_int, NULL);
+    }
+    if (term_installed) {
+        sigaction(SIGTERM, &old_term, NULL);
+    }
+    if (pipe_installed) {
+        sigaction(SIGPIPE, &old_pipe, NULL);
+    }
+#endif
     return result;
+}
+
+int tcp_server_run_application(uint16_t port, const tcp_application *application)
+{
+    return tcp_server_run_managed(port, application, NULL);
 }

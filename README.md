@@ -1,6 +1,9 @@
-# hjm-mini-redis — 해시 테이블 핵심
+# Mini-Redis
 
-Mini Redis의 키-값 저장소 기반이 되는 C 해시 테이블이다. 이 문서는 해시 테이블 API와 일괄 자동 확장을 설명한다. TTL·HTTP·TCP 서버의 실행과 사용법은 [Mini Redis 사용 가이드.md](Mini%20Redis%20사용%20가이드.md)를 참고한다.
+이 문서는 Mini Redis 해시 테이블 API와 일괄 자동 확장을 설명합니다.
+TTL·HTTP·TCP 서버의 실행과 사용법은 [Mini Redis 사용 가이드.md](Mini%20Redis%20사용%20가이드.md)를 참고하세요..
+
+Windows 11 64bit 환경에서 제작되었습니다.
 
 ## 디렉터리
 
@@ -13,23 +16,52 @@ Mini Redis의 키-값 저장소 기반이 되는 C 해시 테이블이다. 이 �
 | `third_party/siphash/` | SipHash 참조 구현 원본([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) |
 | `tests/` | 단위 테스트와 테스트 전용 할당기 |
 | `examples/basic_usage.c` | 사용 예제 |
-| `test.c` | 기존 Hello World(`make run`) |
+
 
 ## 빌드와 테스트
 
-MinGW-w64 GCC 기준(Windows PowerShell). `make`와 `mingw32-make` 모두 사용 가능하다.
+MinGW-w64 GCC 기준(Windows PowerShell). `make`와 `mingw32-make` 모두 사용 가능합니다.
 
 ```powershell
+make clean                # build/ 삭제
+make                      # 라이브러리 + 예제 + 단위 테스트 실행 파일 + Windows 서버 빌드
 mingw32-make unit-test     # 해시 테이블 단위 테스트 빌드 + 실행 (19개)
 mingw32-make run-example   # 예제 빌드 + 실행
 mingw32-make lib           # build/libhash_table.a
-mingw32-make all           # 기존 test.exe + 라이브러리 + 예제 + 단위 테스트 + Windows 서버 빌드
+mingw32-make run-server    # Windows 서버 빌드 + 실행
 mingw32-make check         # 저장소·HTTP·TCP 및 실제 기능·시간 제한까지 회귀 검증
-mingw32-make run           # 기존 test.exe 실행
-mingw32-make clean         # test.exe와 build/ 삭제
 ```
 
-Windows에서는 `-lbcrypt`를 링크한다. Linux(devcontainer)에서는 `/dev/urandom`을 쓰며 추가 라이브러리는 없다.
+<details>
+<summary>접기/펼치기</summary> 
+
+| 구분 | 명령 | 역할 |
+|---|---|---|
+| 기본 빌드 | `make` 또는 `make all` | 서버, 해시 테이블 정적 라이브러리, 예제, 해시 테이블 단위 테스트 실행 파일을 빌드합니다. |
+| 정리 | `make clean` | `build/` 디렉터리 전체를 삭제합니다. |
+| 서버 | `make server` | Windows에서는 `build/mini-redis.exe`, POSIX에서는 `build/mini-redis`를 빌드합니다. |
+| 서버 | `make run-server` | 서버를 빌드하고 실행합니다. |
+| 라이브러리 | `make lib` | `build/libhash_table.a`를 빌드합니다. |
+| 예제 | `make example` | `build/basic_usage.exe`를 빌드합니다. |
+| 예제 | `make run-example` | 해시 테이블 사용 예제를 빌드하고 실행합니다. |
+| 테스트 | `make test` 또는 `make unit-test` | 해시 테이블 단위 테스트를 실행합니다. |
+| 테스트 | `make store-test` | 키·값 저장소 단위 테스트를 실행합니다. |
+| 테스트 | `make http-test` | HTTP API 테스트를 실행합니다. |
+| 테스트 | `make tcp-test` | TCP 연결과 송수신 처리 테스트를 실행합니다. |
+| 테스트 | `make server-unit-test` | `store-test`와 `http-test`를 실행합니다. Windows에서는 `tcp-test`도 실행합니다. |
+| 테스트 | `make functional-test` | 실제 서버를 띄워 HTTP 요청으로 기능을 검증합니다. |
+| 테스트 | `make timeout-test` | 제한 시간을 짧게 설정한 테스트용 서버로 TCP 타임아웃 동작을 검증합니다. |
+| 테스트 | `make bucket-test` | 버킷 동작과 `bucket-hardening-test`를 함께 검증합니다. |
+| 테스트 | `make bucket-hardening-test` | 버킷 트리의 불변식과 실패 처리 등을 집중 검증합니다. |
+| 테스트 | `make check` | `unit-test`, `server-unit-test`, `functional-test`, `timeout-test`, `persistence-test`, `bucket-test`, `bucket-native-test`를 실행합니다. |
+| 벤치마크 | `make benchmark` | 네이티브 성능 측정 실행 파일을 빌드합니다. |
+| 벤치마크 | `make native-test` | 네이티브 벤치마크의 동작과 출력을 검증합니다. 별도로 실행합니다. |
+| 벤치마크 | `make bucket-benchmark` | 버킷 구현을 비교하는 벤치마크 실행 파일을 빌드합니다. |
+| 벤치마크 | `make bucket-native-test` | 버킷 벤치마크와 서버의 버킷 옵션 동작을 검증합니다. |
+</details>
+
+Windows에서는 `-lbcrypt`를,
+ Linux(devcontainer)에서는 외부 라이브러리 없이 `/dev/urandom`을 사용합니다.
 
 ## 사용 예
 
@@ -67,9 +99,26 @@ int main(void)
 }
 ```
 
-교체(`INSERTED`/`REPLACED` 구분)와 조회 실패(`NOT_FOUND`) 처리를 포함한 예제는 `examples/basic_usage.c`(`mingw32-make run-example`)에 있다.
+교체(`INSERTED`/`REPLACED` 구분)와 조회 실패(`NOT_FOUND`) 처리를 포함한 예제는 `examples/basic_usage.c`(`mingw32-make run-example`)에 있습니다..
 
 빌드: `gcc -std=c11 -Iinclude app.c build/libhash_table.a -lbcrypt` (Linux에서는 `-lbcrypt` 제외).
+
+## 자료구조 옵션
+
+서버를 시작할 때 `--bucket-structure` 옵션으로 버킷의 요소를 관리할 방법을 선택할 수 있습니다.
+
+`--bucket-structure list` 연결 리스트 (기본값)
+`--bucket-structure rbtree` 레드블랙 트리
+
+```powershell
+make server
+
+# 연결 리스트
+.\build\mini-redis.exe 8080 --bucket-structure list
+
+# RB 트리
+.\build\mini-redis.exe 8081 --bucket-structure rbtree
+```
 
 ## 동작 원리: SipHash → 버킷 → 체인
 
@@ -80,7 +129,9 @@ int main(void)
 5. 체인을 따라가며 길이와 바이트(`memcmp`)가 모두 같은 키를 찾는다(`find_entry_link`). 이 함수는 엔트리 자체가 아니라 그 엔트리를 가리키는 링크의 주소를 돌려주므로, 삭제 시 머리/중간/꼬리를 같은 코드(`*link = entry->next`)로 처리한다.
 6. 신규 삽입으로 개수가 현재 버킷 수를 초과하면 버킷을 정확히 2배로 늘리고 기존 엔트리를 재배치한 뒤 삽입한다. 확장이 없으면 체인 머리 연결은 O(1)이다.
 
-생성 시 버킷 수는 초기 용량이다. `size == bucket_count`까지 확장하지 않고 다음 신규 삽입에서 확장한다. 초기 용량 3은 3→6→12처럼 증가한다. 교체는 확장하지 않고 삭제는 축소하지 않는다. 부하율 기준 1은 이번 단계의 기본 정책이며 성능 최적값으로 정한 것은 아니다. 같은 시드와 나머지 연산을 사용하고 체인 순서는 공개 계약으로 보장하지 않는다.
+생성 시 버킷 수는 초기 용량입니다.. `size == bucket_count`까지 확장하지 않고 다음 신규 삽입에서 확장합니다. 
+교체는 확장하지 않고 삭제는 축소하지 않습니다. Loac Factor 기준 1은 이번 단계의 기본 정책이며 성능 최적값으로 정한 것은 아닙니다.
+같은 시드와 나머지 연산을 사용하고 체인 순서는 공개 계약으로 보장하지 않습니다.
 
 ## API 계약
 
@@ -126,8 +177,30 @@ int main(void)
 
 ## 보류 항목(이번 범위 밖)
 
-점진적 리해시, 자동 축소, ListPack, 주기적 TTL 정리, RESP, 영속성, 성능 튜닝, 대규모 퍼징/부하 테스트. TTL 저장소와 HTTP/TCP는 이미 별도 계층으로 구현되어 있다. 계획은 [구현 설계.md](구현%20설계.md)의 향후 계획 참고.
+점진적 리해시, 자동 축소, ListPack, 주기적 TTL 정리, RESP, 성능 튜닝, 대규모 퍼징/부하 테스트. 계획은 [구현 설계.md](구현%20설계.md)의 향후 계획을 참고하세요.
 
 ## 2026-11-17 버킷 구조 선택
 
 기존 생성 API와 리스트 기본값을 유지하면서 RBTree를 선택하는 `hash_table_create_config()`·`store_create_config()`를 추가했습니다. 서버 시작 옵션, 실제 상태 통계, 별도 C 삽입·조회 비교 도구와 실패 계약은 [BUCKET_STRUCTURES.md](BUCKET_STRUCTURES.md)를 참고하십시오. 기존 3-system 네이티브 벤치마크는 유지합니다.
+
+## RDB·AOF 영속성
+
+기본 모드는 메모리 전용 `none`입니다. `rdb`는 수동 저장 때의 스냅샷을 복원합니다. `aof`는 성공한 PUT·DELETE를 로그에 기록하고 매 변경마다 디스크와 동기화합니다. 리스트와 RBTree 모두 같은 파일 형식을 사용합니다.
+
+Windows에서는 `mingw32-make server`, POSIX에서는 `make server`로 빌드합니다. 아래 경로의 부모 디렉터리가 존재해야 합니다.
+
+```powershell
+.\build\mini-redis.exe 8080 --persistence rdb --data-dir .\build\redis-rdb-demo --data-action create
+# 별도 터미널
+curl.exe http://127.0.0.1:8080/persistence
+curl.exe -X PUT --data-binary "value" http://127.0.0.1:8080/keys/demo
+curl.exe -X POST http://127.0.0.1:8080/persistence/save
+curl.exe -X POST http://127.0.0.1:8080/persistence/shutdown
+# 첫 프로세스가 종료 코드 0으로 끝난 후
+.\build\mini-redis.exe 8080 --persistence rdb --data-dir .\build\redis-rdb-demo --data-action open
+curl.exe http://127.0.0.1:8080/keys/demo
+```
+
+`create`는 새 디렉터리만 만들고 `open`은 같은 모드의 기존 저장소를 검증한 뒤 엽니다. AOF에서는 수동 저장 호출을 생략합니다. 정상 종료한 저장소만 재개할 수 있습니다. TTL은 서버 가동 시간만 누적하므로 정지와 복원 시간 동안 만료 시계가 멈춥니다. 실제 Redis의 절대 시각 기반 만료 및 디스크 형식과 다릅니다. AOF는 로그를 계속 추가하므로 파일 크기와 복원 시간이 증가합니다.
+
+형식, 실패 처리, 성능 측정 범위는 [구현 설계.md](구현%20설계.md#영속성-설계)를 참고하세요. 격리 회귀는 `make persistence-test BUILD_DIR=build/persistence-test`로 실행합니다. Windows의 명령은 `mingw32-make`입니다.

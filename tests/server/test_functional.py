@@ -1,4 +1,4 @@
-﻿"""Windows real-server checks; only stdlib, --server PATH [--port PORT]."""
+﻿"""Real-server checks on Windows and POSIX, using only the standard library."""
 import argparse
 import concurrent.futures
 from contextlib import closing, ExitStack
@@ -14,6 +14,15 @@ import sys
 import tempfile
 import time
 import unittest
+
+
+def assert_port_released(port):
+    with socket.socket() as rebound:
+        if os.name != 'nt':
+            # Match the server's bind options so accepted sockets in TIME_WAIT do not mask release.
+            rebound.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        rebound.bind(('127.0.0.1', port))
+        rebound.listen()
 
 
 class RawClient:
@@ -251,7 +260,8 @@ class FunctionalTests(unittest.TestCase):
         for payload in (request_bytes('GET', '/keys/large'), b'PUT /keys/broken HTTP/1.1\r\n'):
             sock = socket.create_connection(('127.0.0.1', self.port), timeout=4)
             sock.sendall(payload)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('HH', 1, 0))
+            linger_format = 'HH' if os.name == 'nt' else 'ii'
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack(linger_format, 1, 0))
             sock.close()
         self.assertEqual(self.api('GET', '/health')[0], 200)
 
@@ -321,8 +331,7 @@ def main():
                 server.stop()
             idle.assert_closed()
             partial.assert_closed()
-        with socket.socket() as rebound:
-            rebound.bind(('127.0.0.1', args.port))
+        assert_port_released(args.port)
         print('Shutdown: exit 0; active sockets closed; listening port released')
     return 0 if success else 1
 

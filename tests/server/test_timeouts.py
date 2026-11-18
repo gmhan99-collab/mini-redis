@@ -15,7 +15,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_functional import RawClient, Server, request_bytes  # noqa: E402
+from test_functional import RawClient, Server, assert_port_released, request_bytes  # noqa: E402
 
 
 def closed_now(sock, wait_s):
@@ -128,8 +128,7 @@ def main():
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     finally:
         server.stop()
-    with socket.socket() as rebound:
-        rebound.bind(('127.0.0.1', args.port))
+    assert_port_released(args.port)
     print('Shutdown: exit 0; listening port released')
     return 0 if result.wasSuccessful() else 1
 

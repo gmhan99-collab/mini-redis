@@ -80,7 +80,8 @@ int main(int argc, char **argv)
     uint32_t state;
     int ok = 0;
     if (!bench_options(argc, argv, 0, &config)) {
-        fprintf(stderr, "Invalid options: --count 1..10000 --queries 1..1000000 --rounds 1..20 --seed uint32 --hit-percent 0..100\n");
+        fprintf(stderr, "Invalid options: --count 1..%u --queries 1..%u --rounds 1..%u --seed uint32 --hit-percent 0..100\n",
+                BENCH_COUNT_MAX, BENCH_QUERIES_MAX, BENCH_ROUNDS_MAX);
         return 2;
     }
     const uint64_t start = measurement_ticks();

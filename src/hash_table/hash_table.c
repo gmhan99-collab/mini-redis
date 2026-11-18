@@ -474,6 +474,39 @@ size_t hash_table_size(const hash_table_t *table)
     return table == NULL ? 0 : table->size;
 }
 
+static int visit_entry(const hash_table_entry *entry, hash_table_visitor visit, void *context)
+{
+    return visit(entry->key, entry->key_len, entry->value, entry->value_len, context);
+}
+
+static int visit_tree(const hash_table_entry *node, hash_table_visitor visit, void *context)
+{
+    return node == NULL || (visit_entry(node, visit, context) &&
+                            visit_tree(node->left, visit, context) &&
+                            visit_tree(node->right, visit, context));
+}
+
+int hash_table_visit(const hash_table_t *table, hash_table_visitor visit, void *context)
+{
+    if (!table || !visit) {
+        return 0;
+    }
+    for (size_t i = 0; i < table->bucket_count; i++) {
+        if (table->structure == HASH_TABLE_RBTREE) {
+            if (!visit_tree(table->buckets[i], visit, context)) {
+                return 0;
+            }
+        } else {
+            for (const hash_table_entry *entry = table->buckets[i]; entry; entry = entry->next) {
+                if (!visit_entry(entry, visit, context)) {
+                    return 0;
+                }
+            }
+        }
+    }
+    return 1;
+}
+
 size_t hash_table_bucket_count(const hash_table_t *table)
 {
     return table == NULL ? 0 : table->bucket_count;

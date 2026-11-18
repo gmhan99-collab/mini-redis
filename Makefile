@@ -1,6 +1,5 @@
 CC := gcc
 CFLAGS := -std=c11 -Wall -Wextra
-TARGET := test.exe
 
 BUILD_DIR := build
 SIPHASH_DIR := third_party/siphash
@@ -19,31 +18,25 @@ ifeq ($(OS),Windows_NT)
 SHELL := cmd.exe
 EXE := .exe
 OS_LDLIBS := -lbcrypt
+SERVER_LDLIBS := -lws2_32
+SERVER_PLATFORM_CPPFLAGS := -DFD_SETSIZE=256
 make_dir = if not exist "$(subst /,\,$(1))" mkdir "$(subst /,\,$(1))"
 run_program = $(subst /,\,$(1))
-remove_build = if exist $(BUILD_DIR) rmdir /S /Q $(BUILD_DIR)
-remove_target = if exist $(TARGET) del /Q $(TARGET)
+remove_build = if exist "$(subst /,\,$(BUILD_DIR))" rmdir /S /Q "$(subst /,\,$(BUILD_DIR))"
 else
 EXE :=
 OS_LDLIBS :=
 make_dir = mkdir -p $(1)
 run_program = ./$(1)
-remove_build = rm -rf $(BUILD_DIR)
-remove_target = rm -f $(TARGET)
+remove_build = rm -rf -- "$(BUILD_DIR)"
 endif
 
 UNIT_TEST := $(BUILD_DIR)/test_hash_table$(EXE)
 EXAMPLE := $(BUILD_DIR)/basic_usage$(EXE)
 
-.PHONY: all run clean lib example run-example unit-test test
+.PHONY: all clean lib example run-example unit-test test
 
-all: $(TARGET) lib example $(UNIT_TEST)
-
-$(TARGET): test.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) test.c $(LDFLAGS) $(LDLIBS) -o $@
-
-run: $(TARGET)
-	$(call run_program,$(TARGET))
+all: lib example $(UNIT_TEST)
 
 lib: $(HASH_TABLE_LIB)
 
@@ -75,23 +68,24 @@ unit-test: $(UNIT_TEST)
 test: unit-test
 
 clean:
-	$(remove_target)
 	$(remove_build)
 
 # Windows HTTP 서버와 계층별 회귀 테스트. 해시 테이블 단독 타깃은 유지한다.
 LLHTTP_DIR := third_party/llhttp
-SERVER_CPPFLAGS := $(LIB_CPPFLAGS) -I$(LLHTTP_DIR)/include -DFD_SETSIZE=256
+SERVER_CPPFLAGS := $(LIB_CPPFLAGS) -I$(LLHTTP_DIR)/include $(SERVER_PLATFORM_CPPFLAGS)
 LLHTTP_SOURCES := $(LLHTTP_DIR)/src/llhttp.c $(LLHTTP_DIR)/src/http.c $(LLHTTP_DIR)/src/api.c
 LLHTTP_OBJECTS := $(patsubst %.c,$(BUILD_DIR)/obj/%.o,$(LLHTTP_SOURCES))
 STORE_SOURCES := src/store/store.c
+PERSISTENCE_SOURCES := src/store/persistence.c src/store/persistence_file.c
 HTTP_SOURCES := src/server/http_api.c src/server/redis_http.c
-SERVER_SOURCES := src/server/main.c src/server/tcp_server.c src/server/redis_server.c $(STORE_SOURCES) $(HTTP_SOURCES)
-SERVER_HEADERS := include/measurement_clock.h include/server/redis_http.h include/store.h include/server/http_api.h include/server/tcp_server.h $(LLHTTP_DIR)/include/llhttp.h
+SERVER_SOURCES := src/server/main.c src/server/tcp_server.c src/server/redis_server.c $(STORE_SOURCES) $(HTTP_SOURCES) $(PERSISTENCE_SOURCES)
+SERVER_HEADERS := include/measurement_clock.h include/server/redis_http.h include/store.h include/persistence.h src/store/persistence_file.h include/server/http_api.h include/server/tcp_server.h $(LLHTTP_DIR)/include/llhttp.h
 SERVER := $(BUILD_DIR)/mini-redis$(EXE)
 STORE_TEST := $(BUILD_DIR)/test_store$(EXE)
 HTTP_TEST := $(BUILD_DIR)/test_http_api$(EXE)
 TCP_TEST := $(BUILD_DIR)/test_tcp_progress$(EXE)
 TIMEOUT_SERVER := $(BUILD_DIR)/mini-redis-timeout-test$(EXE)
+PERSISTENCE_SERVER := $(BUILD_DIR)/mini-redis-persistence-test$(EXE)
 TIMEOUT_FLAGS := -DTCP_RECEIVE_TIMEOUT_MS=700u -DTCP_IDLE_TIMEOUT_MS=1200u -DTCP_SEND_TIMEOUT_MS=700u
 PYTHON ?= python
 
@@ -110,7 +104,7 @@ $(BUILD_DIR)/obj/$(LLHTTP_DIR)/%.o: $(LLHTTP_DIR)/%.c $(LLHTTP_DIR)/include/llht
 
 $(SERVER): $(SERVER_SOURCES) $(SERVER_HEADERS) $(HASH_TABLE_LIB) $(LLHTTP_OBJECTS)
 	@$(call make_dir,$(BUILD_DIR))
-	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/server-metadata $(CFLAGS) $(SERVER_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) -lws2_32 $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/server-metadata $(CFLAGS) $(SERVER_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) $(SERVER_LDLIBS) $(LDLIBS) -o $@
 
 run-server: $(SERVER)
 	$(call run_program,$(SERVER))
@@ -118,8 +112,8 @@ run-server: $(SERVER)
 $(STORE_TEST): tests/test_store.c tests/test_allocator.c tests/test_allocator.h $(STORE_SOURCES) include/store.h $(LIB_HEADERS) $(TEST_OBJECTS)
 	$(CC) $(CPPFLAGS) $(LIB_CPPFLAGS) -Itests $(CFLAGS) -DSTORE_TEST_ALLOCATOR tests/test_store.c tests/test_allocator.c $(STORE_SOURCES) $(TEST_OBJECTS) $(LDFLAGS) $(OS_LDLIBS) $(LDLIBS) -o $@
 
-$(HTTP_TEST): tests/test_http_api.c $(HTTP_SOURCES) $(STORE_SOURCES) $(SERVER_HEADERS) $(HASH_TABLE_LIB) $(LLHTTP_OBJECTS)
-	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/server-metadata $(CFLAGS) tests/test_http_api.c $(HTTP_SOURCES) $(STORE_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) $(LDLIBS) -o $@
+$(HTTP_TEST): tests/test_http_api.c $(HTTP_SOURCES) $(STORE_SOURCES) $(PERSISTENCE_SOURCES) $(SERVER_HEADERS) $(HASH_TABLE_LIB) $(LLHTTP_OBJECTS)
+	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/server-metadata $(CFLAGS) tests/test_http_api.c $(HTTP_SOURCES) $(STORE_SOURCES) $(PERSISTENCE_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) $(LDLIBS) -o $@
 
 $(TCP_TEST): tests/server/test_tcp_progress.c src/server/tcp_server.c $(SERVER_HEADERS)
 	@$(call make_dir,$(BUILD_DIR))
@@ -131,23 +125,33 @@ store-test: $(STORE_TEST)
 http-test: $(HTTP_TEST)
 	$(call run_program,$(HTTP_TEST))
 
+ifeq ($(OS),Windows_NT)
 tcp-test: $(TCP_TEST)
 	$(call run_program,$(TCP_TEST))
+server-unit-test: tcp-test
+endif
 
-server-unit-test: store-test http-test tcp-test
+server-unit-test: store-test http-test
 
 functional-test: $(SERVER)
 	$(PYTHON) tests/server/test_functional.py --server $(SERVER)
 
 $(TIMEOUT_SERVER): $(SERVER_SOURCES) $(SERVER_HEADERS) $(HASH_TABLE_LIB) $(LLHTTP_OBJECTS)
-	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/timeout-metadata $(CFLAGS) $(TIMEOUT_FLAGS) $(SERVER_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) -lws2_32 $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/timeout-metadata $(CFLAGS) $(TIMEOUT_FLAGS) $(SERVER_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) $(SERVER_LDLIBS) $(LDLIBS) -o $@
 
 timeout-test: $(TIMEOUT_SERVER)
 	$(PYTHON) tests/server/test_timeouts.py --server $(TIMEOUT_SERVER)
 
-check: unit-test server-unit-test functional-test timeout-test
+.PHONY: persistence-test
+$(PERSISTENCE_SERVER): $(SERVER_SOURCES) $(SERVER_HEADERS) $(HASH_TABLE_LIB) $(LLHTTP_OBJECTS) include/bucket_options.h
+	$(CC) $(CPPFLAGS) $(SERVER_CPPFLAGS) -I$(BUILD_DIR)/server-metadata $(CFLAGS) -DPERSISTENCE_TEST_HOOKS $(SERVER_SOURCES) $(LLHTTP_OBJECTS) $(HASH_TABLE_LIB) $(LDFLAGS) $(OS_LDLIBS) $(SERVER_LDLIBS) $(LDLIBS) -o $@
 
-# Isolated native measurement executable; BUILD_DIR may be overridden on the CLI.
+persistence-test: $(PERSISTENCE_SERVER)
+	$(PYTHON) tests/server/test_persistence.py --server $(PERSISTENCE_SERVER)
+
+check: unit-test server-unit-test functional-test timeout-test persistence-test
+
+# Native measurement executable uses the same build directory as the server.
 BENCHMARK := $(BUILD_DIR)/mini-redis-benchmark$(EXE)
 BENCH_CFLAGS ?= $(CFLAGS) -O2
 .PHONY: benchmark native-test
@@ -178,7 +182,7 @@ $(NATIVE_BUILD_INFO): FORCE_BUILD_INFO tools/generate_build_info.py
 $(TIMEOUT_BUILD_INFO): FORCE_BUILD_INFO tools/generate_build_info.py
 	$(PYTHON) tools/generate_build_info.py $@ timeout
 $(TIMEOUT_SERVER): $(TIMEOUT_BUILD_INFO)
-$(SERVER) $(HTTP_TEST) $(LIB_OBJECTS) $(LLHTTP_OBJECTS): $(SERVER_BUILD_INFO)
+$(SERVER) $(HTTP_TEST) $(PERSISTENCE_SERVER) $(LIB_OBJECTS) $(LLHTTP_OBJECTS): $(SERVER_BUILD_INFO)
 $(BENCHMARK): $(NATIVE_BUILD_INFO)
 
 BUCKET_TEST := $(BUILD_DIR)/test_buckets$(EXE)

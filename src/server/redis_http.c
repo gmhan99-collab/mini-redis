@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-typedef enum { ROUTE_HEALTH, ROUTE_KEY } route_kind;
+typedef enum { ROUTE_HEALTH, ROUTE_KEY, ROUTE_PERSISTENCE, ROUTE_SAVE, ROUTE_SHUTDOWN } route_kind;
 typedef struct {
     const char *url;
     size_t url_length;
@@ -30,6 +30,7 @@ static const http_error ERROR_TTL_NOT_ALLOWED = {400, "ttl_not_allowed", NULL};
 static const http_error ERROR_INVALID_ARGUMENT = {400, "invalid_argument", NULL};
 static const http_error ERROR_ROUTE_NOT_FOUND = {404, "route_not_found", NULL};
 static const http_error ERROR_HEALTH_METHOD = {405, "method_not_allowed", "GET"};
+static const http_error ERROR_CONTROL_METHOD = {405, "method_not_allowed", "POST"};
 static const http_error ERROR_KEY_METHOD = {405, "method_not_allowed", "GET, PUT, DELETE"};
 static const http_error ERROR_INVALID_TARGET = {400, "invalid_target", NULL};
 static const http_error ERROR_QUERY = {400, "query_not_supported", NULL};
@@ -38,6 +39,8 @@ static const http_error ERROR_KEY_TOO_LONG = {414, "key_too_long", NULL};
 static const http_error ERROR_INTERNAL = {500, "internal_error", NULL};
 static const http_error ERROR_LENGTH_REQUIRED = {400, "content_length_required", NULL};
 static const http_error ERROR_BODY_NOT_ALLOWED = {400, "body_not_allowed", NULL};
+static const http_error ERROR_NOT_RDB = {409, "not_rdb_mode", NULL};
+static const http_error ERROR_PERSISTENCE = {500, "persistence_error", NULL};
 static const char BINARY_CONTENT_TYPE[] = "application/octet-stream";
 static const char JSON_OK[] = "{\"ok\":true}";
 
@@ -119,7 +122,13 @@ static const http_error *decode_key(redis_request *connection, const char *encod
     return NULL;
 }
 
-static const http_error *resolve_route(redis_request *connection)
+static int route_matches(const redis_request *request, const char *path)
+{
+    size_t length = strlen(path);
+    return request->url_length == length && memcmp(request->url, path, length) == 0;
+}
+
+static const http_error *resolve_route(redis_request *connection, int managed)
 {
     static const char key_prefix[] = "/keys/";
     const size_t prefix_length = sizeof(key_prefix) - 1;
@@ -132,9 +141,21 @@ static const http_error *resolve_route(redis_request *connection)
     if (memchr(url, '?', length) != NULL || memchr(url, '#', length) != NULL) {
         return &ERROR_QUERY;
     }
-    if (length == strlen("/health") && memcmp(url, "/health", length) == 0) {
+    if (route_matches(connection, "/health")) {
         connection->route = ROUTE_HEALTH;
         return method == HTTP_GET ? NULL : &ERROR_HEALTH_METHOD;
+    }
+    if (managed && route_matches(connection, "/persistence")) {
+        connection->route = ROUTE_PERSISTENCE;
+        return method == HTTP_GET ? NULL : &ERROR_HEALTH_METHOD;
+    }
+    if (managed && route_matches(connection, "/persistence/save")) {
+        connection->route = ROUTE_SAVE;
+        return method == HTTP_POST ? NULL : &ERROR_CONTROL_METHOD;
+    }
+    if (managed && route_matches(connection, "/persistence/shutdown")) {
+        connection->route = ROUTE_SHUTDOWN;
+        return method == HTTP_POST ? NULL : &ERROR_CONTROL_METHOD;
     }
     if (length < prefix_length || memcmp(url, key_prefix, prefix_length) != 0) {
         return &ERROR_ROUTE_NOT_FOUND;
@@ -191,13 +212,15 @@ static int respond_store_status(http_response *response, store_status status, in
         return http_build_error(response, &ERROR_INVALID_ARGUMENT);
     case STORE_OVERFLOW:
         return http_build_error(response, has_ttl ? &ERROR_INVALID_TTL : &ERROR_INTERNAL);
+    case STORE_PERSISTENCE_ERROR:
+        return http_build_error(response, &ERROR_PERSISTENCE);
     default:
         return http_build_error(response, &ERROR_INTERNAL);
     }
 }
 
 static int execute_key_request(redis_request *connection, store_t *store,
-                               http_response *response)
+                               persistence *state, http_response *response)
 {
     int close_after = !connection->keep_alive;
     store_status status;
@@ -221,18 +244,25 @@ static int execute_key_request(redis_request *connection, store_t *store,
     } else if (connection->method == HTTP_PUT) {
         uint64_t ttl_ms = connection->ttl_count > 0 ? connection->ttl_ms : 0;
         start = measurement_ticks();
-        status = store_put(store, connection->key, connection->key_length, connection->body,
-                           connection->body_length, ttl_ms, connection->now_ms);
+        if (state) {
+            status = persistence_put(state, connection->key, connection->key_length, connection->body,
+                                     connection->body_length, ttl_ms, connection->now_ms);
+        } else {
+            status = store_put(store, connection->key, connection->key_length, connection->body,
+                               connection->body_length, ttl_ms, connection->now_ms);
+        }
         end = measurement_ticks();
         elapsed_ms = measurement_ms(start, end);
         result = respond_store_status(response, status, ttl_ms != 0, close_after);
     } else {
         start = measurement_ticks();
-        status = store_delete(store, connection->key, connection->key_length, connection->now_ms);
+        status = state ? persistence_delete(state, connection->key, connection->key_length, connection->now_ms)
+                       : store_delete(store, connection->key, connection->key_length, connection->now_ms);
         end = measurement_ticks();
         elapsed_ms = measurement_ms(start, end);
         result = respond_store_status(response, status, 0, close_after);
     }
+    response->stop_after = state && persistence_failed(state);
     if (result == 1) {
         /* Insert into the already owned response, never inspect the raw body as text. */
         char timing[96];
@@ -263,7 +293,7 @@ static int execute_key_request(redis_request *connection, store_t *store,
     return result;
 }
 
-static int execute_request(redis_request *connection, store_t *store,
+static int execute_request(redis_request *connection, store_t *store, const char *persistence_json,
                            http_response *response)
 {
     if (connection->route == ROUTE_HEALTH) {
@@ -271,19 +301,25 @@ static int execute_request(redis_request *connection, store_t *store,
         if (!description) {
             return http_build_error(response, &ERROR_INTERNAL);
         }
-        const size_t capacity = strlen(description) + sizeof(BUILD_INFO_JSON) + 64;
+        const size_t capacity = strlen(description) + sizeof(BUILD_INFO_JSON) +
+                                (persistence_json ? strlen(persistence_json) : 0) + 64;
         char *json = malloc(capacity);
         if (!json) {
             free(description);
             return http_build_error(response, &ERROR_INTERNAL);
         }
-        snprintf(json, capacity, "{\"ok\":true,\"build_info\":%s,%s", BUILD_INFO_JSON, description + 1);
+        if (persistence_json) {
+            snprintf(json, capacity, "{\"ok\":true,\"build_info\":%s,\"persistence\":%s,%s",
+                     BUILD_INFO_JSON, persistence_json, description + 1);
+        } else {
+            snprintf(json, capacity, "{\"ok\":true,\"build_info\":%s,%s", BUILD_INFO_JSON, description + 1);
+        }
         const int result = http_build_json(response, 200, json, NULL, !connection->keep_alive);
         free(description);
         free(json);
         return result;
     }
-    return execute_key_request(connection, store, response);
+    return execute_key_request(connection, store, NULL, response);
 }
 
 
@@ -302,16 +338,18 @@ static void read_request(redis_request *out, const http_request *in)
     out->parser.content_length = in->content_length;
     out->keep_alive = in->keep_alive;
 }
-static const http_error *redis_validate(const http_request *in, void *context)
+static const http_error *validate_request(const http_request *in, persistence *state)
 {
     redis_request request;
     const http_error *error;
-    (void)context;
     read_request(&request, in);
+    if (state && persistence_current_mode(state) != PERSISTENCE_NONE) {
+        request.now_ms = persistence_now(state, request.now_ms);
+    }
     if (request.ttl_count > 1) {
         return &ERROR_INVALID_TTL;
     }
-    error = resolve_route(&request);
+    error = resolve_route(&request, state != NULL);
     if (!error) {
         error = validate_ttl(&request);
     }
@@ -320,16 +358,87 @@ static const http_error *redis_validate(const http_request *in, void *context)
     }
     return error;
 }
+
+static const http_error *redis_validate(const http_request *in, void *context)
+{
+    (void)context;
+    return validate_request(in, NULL);
+}
+
+static const http_error *redis_managed_validate(const http_request *in, void *context)
+{
+    return validate_request(in, context);
+}
+
 static int redis_execute(const http_request *in, void *context, http_response *response)
 {
     redis_request request;
     read_request(&request, in);
-    resolve_route(&request);
-    return execute_request(&request, context, response);
+    resolve_route(&request, 0);
+    return execute_request(&request, context, NULL, response);
 }
+
+static int redis_managed_execute(const http_request *in, void *context, http_response *response)
+{
+    persistence *state = context;
+    store_t *store = persistence_store(state);
+    redis_request request;
+    read_request(&request, in);
+    resolve_route(&request, 1);
+    uint64_t logical_now = persistence_now(state, in->now_ms);
+    if (request.route == ROUTE_KEY) {
+        if (persistence_current_mode(state) != PERSISTENCE_NONE) {
+            request.now_ms = logical_now;
+        }
+        return execute_key_request(&request, store, state, response);
+    }
+
+    double operation_ms;
+    int stop = request.route == ROUTE_SHUTDOWN;
+    const http_error *error = NULL;
+    const char *metric = NULL;
+    if (stop) {
+        metric = "checkpoint_ms";
+        if (!persistence_finish(state, in->now_ms, &operation_ms)) {
+            error = &ERROR_PERSISTENCE;
+        }
+    } else if (request.route == ROUTE_SAVE) {
+        metric = "save_ms";
+        if (persistence_current_mode(state) != PERSISTENCE_RDB) {
+            error = &ERROR_NOT_RDB;
+        } else if (!persistence_save(state, logical_now, &operation_ms)) {
+            error = &ERROR_PERSISTENCE;
+        }
+        stop = persistence_failed(state);
+    }
+    int result;
+    char status[320];
+    if (error) {
+        result = http_build_error(response, error);
+    } else if (!persistence_status_json(state, logical_now, status, sizeof(status))) {
+        result = http_build_error(response, &ERROR_INTERNAL);
+    } else if (request.route == ROUTE_HEALTH) {
+        result = execute_request(&request, store, status, response);
+    } else {
+        char json[448];
+        if (metric) {
+            snprintf(json, sizeof(json), "{\"ok\":true,\"%s\":%.9f,\"persistence\":%s}",
+                     metric, operation_ms, status);
+        } else {
+            snprintf(json, sizeof(json), "{\"ok\":true,\"persistence\":%s}", status);
+        }
+        result = http_build_json(response, 200, json, NULL, stop || !request.keep_alive);
+    }
+    response->stop_after = stop;
+    return result;
+}
+
 static const http_error *redis_validate_header(const http_request *request, void *context)
 {
     (void)context;
     return request->ttl_count > 1 ? &ERROR_INVALID_TTL : NULL;
 }
 const http_handler redis_http_handler = {redis_validate, redis_execute, redis_validate_header};
+const http_handler redis_managed_http_handler = {
+    redis_managed_validate, redis_managed_execute, redis_validate_header
+};
