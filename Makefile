@@ -1,6 +1,5 @@
 CC := gcc
 CFLAGS := -std=c11 -Wall -Wextra
-TARGET := test.exe
 
 BUILD_DIR := build
 SIPHASH_DIR := third_party/siphash
@@ -21,29 +20,21 @@ EXE := .exe
 OS_LDLIBS := -lbcrypt
 make_dir = if not exist "$(subst /,\,$(1))" mkdir "$(subst /,\,$(1))"
 run_program = $(subst /,\,$(1))
-remove_build = if exist $(BUILD_DIR) rmdir /S /Q $(BUILD_DIR)
-remove_target = if exist $(TARGET) del /Q $(TARGET)
+remove_build = if exist "$(subst /,\,$(BUILD_DIR))" rmdir /S /Q "$(subst /,\,$(BUILD_DIR))"
 else
 EXE :=
 OS_LDLIBS :=
 make_dir = mkdir -p $(1)
 run_program = ./$(1)
-remove_build = rm -rf $(BUILD_DIR)
-remove_target = rm -f $(TARGET)
+remove_build = rm -rf -- "$(BUILD_DIR)"
 endif
 
 UNIT_TEST := $(BUILD_DIR)/test_hash_table$(EXE)
 EXAMPLE := $(BUILD_DIR)/basic_usage$(EXE)
 
-.PHONY: all run clean lib example run-example unit-test test
+.PHONY: all clean lib example run-example unit-test test
 
-all: $(TARGET) lib example $(UNIT_TEST)
-
-$(TARGET): test.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) test.c $(LDFLAGS) $(LDLIBS) -o $@
-
-run: $(TARGET)
-	$(call run_program,$(TARGET))
+all: lib example $(UNIT_TEST)
 
 lib: $(HASH_TABLE_LIB)
 
@@ -75,7 +66,6 @@ unit-test: $(UNIT_TEST)
 test: unit-test
 
 clean:
-	$(remove_target)
 	$(remove_build)
 
 # Windows HTTP 서버와 계층별 회귀 테스트. 해시 테이블 단독 타깃은 유지한다.

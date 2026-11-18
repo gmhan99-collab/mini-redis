@@ -1,6 +1,9 @@
-# hjm-mini-redis — 해시 테이블 핵심
+# Mini-Redis
 
-Mini Redis의 키-값 저장소 기반이 되는 C 해시 테이블이다. 이 문서는 해시 테이블 API와 일괄 자동 확장을 설명한다. TTL·HTTP·TCP 서버의 실행과 사용법은 [Mini Redis 사용 가이드.md](Mini%20Redis%20사용%20가이드.md)를 참고한다.
+이 문서는 Mini Redis 해시 테이블 API와 일괄 자동 확장을 설명합니다.
+TTL·HTTP·TCP 서버의 실행과 사용법은 [Mini Redis 사용 가이드.md](Mini%20Redis%20사용%20가이드.md)를 참고하세요..
+
+Windows 11 64bit 환경에서 제작되었습니다.
 
 ## 디렉터리
 
@@ -13,23 +16,52 @@ Mini Redis의 키-값 저장소 기반이 되는 C 해시 테이블이다. 이 �
 | `third_party/siphash/` | SipHash 참조 구현 원본([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) |
 | `tests/` | 단위 테스트와 테스트 전용 할당기 |
 | `examples/basic_usage.c` | 사용 예제 |
-| `test.c` | 기존 Hello World(`make run`) |
+
 
 ## 빌드와 테스트
 
-MinGW-w64 GCC 기준(Windows PowerShell). `make`와 `mingw32-make` 모두 사용 가능하다.
+MinGW-w64 GCC 기준(Windows PowerShell). `make`와 `mingw32-make` 모두 사용 가능합니다.
 
 ```powershell
+make clean                # build/ 삭제
+make                      # 라이브러리 + 예제 + 단위 테스트 실행 파일 + Windows 서버 빌드
 mingw32-make unit-test     # 해시 테이블 단위 테스트 빌드 + 실행 (19개)
 mingw32-make run-example   # 예제 빌드 + 실행
 mingw32-make lib           # build/libhash_table.a
-mingw32-make all           # 기존 test.exe + 라이브러리 + 예제 + 단위 테스트 + Windows 서버 빌드
+mingw32-make run-server    # Windows 서버 빌드 + 실행
 mingw32-make check         # 저장소·HTTP·TCP 및 실제 기능·시간 제한까지 회귀 검증
-mingw32-make run           # 기존 test.exe 실행
-mingw32-make clean         # test.exe와 build/ 삭제
 ```
 
-Windows에서는 `-lbcrypt`를 링크한다. Linux(devcontainer)에서는 `/dev/urandom`을 쓰며 추가 라이브러리는 없다.
+<details>
+<summary>접기/펼치기</summary> 
+
+| 구분 | 명령 | 역할 |
+|---|---|---|
+| 기본 빌드 | `make` 또는 `make all` | 서버, 해시 테이블 정적 라이브러리, 예제, 해시 테이블 단위 테스트 실행 파일을 빌드합니다. |
+| 정리 | `make clean` | `build/` 디렉터리 전체를 삭제합니다. |
+| 서버 | `make server` | `build/mini-redis.exe`를 빌드합니다. |
+| 서버 | `make run-server` | 서버를 빌드하고 실행합니다. |
+| 라이브러리 | `make lib` | `build/libhash_table.a`를 빌드합니다. |
+| 예제 | `make example` | `build/basic_usage.exe`를 빌드합니다. |
+| 예제 | `make run-example` | 해시 테이블 사용 예제를 빌드하고 실행합니다. |
+| 테스트 | `make test` 또는 `make unit-test` | 해시 테이블 단위 테스트를 실행합니다. |
+| 테스트 | `make store-test` | 키·값 저장소 단위 테스트를 실행합니다. |
+| 테스트 | `make http-test` | HTTP API 테스트를 실행합니다. |
+| 테스트 | `make tcp-test` | TCP 연결과 송수신 처리 테스트를 실행합니다. |
+| 테스트 | `make server-unit-test` | `store-test`, `http-test`, `tcp-test`를 함께 실행합니다. |
+| 테스트 | `make functional-test` | 실제 서버를 띄워 HTTP 요청으로 기능을 검증합니다. |
+| 테스트 | `make timeout-test` | 제한 시간을 짧게 설정한 테스트용 서버로 TCP 타임아웃 동작을 검증합니다. |
+| 테스트 | `make bucket-test` | 버킷 동작과 `bucket-hardening-test`를 함께 검증합니다. |
+| 테스트 | `make bucket-hardening-test` | 버킷 트리의 불변식과 실패 처리 등을 집중 검증합니다. |
+| 테스트 | `make check` | `unit-test`, `server-unit-test`, `functional-test`, `timeout-test`, `bucket-test`, `bucket-native-test`를 실행합니다. |
+| 벤치마크 | `make benchmark` | 네이티브 성능 측정 실행 파일을 빌드합니다. |
+| 벤치마크 | `make native-test` | 네이티브 벤치마크의 동작과 출력을 검증합니다. 별도로 실행합니다. |
+| 벤치마크 | `make bucket-benchmark` | 버킷 구현을 비교하는 벤치마크 실행 파일을 빌드합니다. |
+| 벤치마크 | `make bucket-native-test` | 버킷 벤치마크와 서버의 버킷 옵션 동작을 검증합니다. |
+</details>
+
+Windows에서는 `-lbcrypt`를,
+ Linux(devcontainer)에서는 외부 라이브러리 없이 `/dev/urandom`을 사용합니다.
 
 ## 사용 예
 
@@ -71,6 +103,22 @@ int main(void)
 
 빌드: `gcc -std=c11 -Iinclude app.c build/libhash_table.a -lbcrypt` (Linux에서는 `-lbcrypt` 제외).
 
+## 자료구조 옵션
+서버를 시작할 때 `--bucket-structure` 옵션으로 버킷의 요소를 관리할 방법을 선택할 수 있습니다.
+
+`--bucket-structure list` 연결 리스트 (기본값)
+`--bucket-structure rbtree` 레드블랙 트리
+
+```powershell
+make server
+
+# 연결 리스트
+.\build\mini-redis.exe 8080 --bucket-structure list
+
+# RB 트리
+.\build\mini-redis.exe 8081 --bucket-structure rbtree
+```
+
 ## 동작 원리: SipHash → 버킷 → 체인
 
 1. 테이블 생성 시 128비트 시드를 한 번 만들고 테이블 수명 동안 유지한다.
@@ -80,7 +128,9 @@ int main(void)
 5. 체인을 따라가며 길이와 바이트(`memcmp`)가 모두 같은 키를 찾는다(`find_entry_link`). 이 함수는 엔트리 자체가 아니라 그 엔트리를 가리키는 링크의 주소를 돌려주므로, 삭제 시 머리/중간/꼬리를 같은 코드(`*link = entry->next`)로 처리한다.
 6. 신규 삽입으로 개수가 현재 버킷 수를 초과하면 버킷을 정확히 2배로 늘리고 기존 엔트리를 재배치한 뒤 삽입한다. 확장이 없으면 체인 머리 연결은 O(1)이다.
 
-생성 시 버킷 수는 초기 용량이다. `size == bucket_count`까지 확장하지 않고 다음 신규 삽입에서 확장한다. 초기 용량 3은 3→6→12처럼 증가한다. 교체는 확장하지 않고 삭제는 축소하지 않는다. 부하율 기준 1은 이번 단계의 기본 정책이며 성능 최적값으로 정한 것은 아니다. 같은 시드와 나머지 연산을 사용하고 체인 순서는 공개 계약으로 보장하지 않는다.
+생성 시 버킷 수는 초기 용량입니다.. `size == bucket_count`까지 확장하지 않고 다음 신규 삽입에서 확장합니다. 
+교체는 확장하지 않고 삭제는 축소하지 않습니다. Loac Factor 기준 1은 이번 단계의 기본 정책이며 성능 최적값으로 정한 것은 아닙니다.
+같은 시드와 나머지 연산을 사용하고 체인 순서는 공개 계약으로 보장하지 않습니다.
 
 ## API 계약
 
